@@ -48,6 +48,7 @@ static __inline struct go_grpc_http2_header_event_t* get_header_event() {
 // Maps that communicates the location of symbols within a binary.
 //   Key: TGID
 //   Value: Symbol addresses for the binary with that TGID.
+// 创建HASH表，参数分别是：表名，key类型，value类型
 BPF_HASH(http2_symaddrs_map, uint32_t, struct go_http2_symaddrs_t);
 
 // This map is used to help extract HTTP2 headers from the net/http library.
@@ -185,6 +186,7 @@ static __inline void fill_header_field(struct go_grpc_http2_header_event_t* even
   copy_header_field(&event->value, &value);
 }
 
+// 将数据封装成event，并输出到CPU缓冲区perf buffer
 static __inline void submit_headers(struct pt_regs* ctx, enum http2_probe_type_t probe_type,
                                     enum grpc_event_type_t type, int32_t fd, uint32_t stream_id,
                                     bool end_stream, void* fields_ptr, int64_t fields_len,
@@ -330,6 +332,77 @@ int probe_loopy_writer_write_header(struct pt_regs* ctx) {
 
   return 0;
 }
+
+// Experiment
+int probe_loopy_writer_write_header(struct pt_regs* ctx) {
+  // tgid thread group id，线程组id和进程ID是一致的，同一个进程创建的线程属于该进程的线程组
+  uint32_t tgid = bpf_get_current_pid_tgid() >> 32;
+  struct go_http2_symaddrs_t* symaddrs = http2_symaddrs_map.lookup(&tgid);
+  if (symaddrs == NULL) {
+    return 0;
+  }
+
+  // Required argument offsets.
+  REQUIRE_LOCATION(symaddrs->writeHeader_l_loc, 0);
+  REQUIRE_LOCATION(symaddrs->writeHeader_streamID_loc, 0);
+  REQUIRE_LOCATION(symaddrs->writeHeader_endStream_loc, 0);
+  REQUIRE_LOCATION(symaddrs->writeHeader_hf_ptr_loc, 0);
+  REQUIRE_LOCATION(symaddrs->writeHeader_hf_len_loc, 0);
+
+  // Required member offsets.
+  REQUIRE_SYMADDR(symaddrs->loopyWriter_framer_offset, 0);
+
+  // ---------------------------------------------
+  // Extract arguments
+  // ---------------------------------------------
+
+  const void* sp = (const void*)ctx->sp;
+  uint64_t* regs = go_regabi_regs(ctx);
+  if (regs == NULL) {
+    return 0;
+  }
+
+  void* loopy_writer_ptr = NULL;
+  assign_arg(&loopy_writer_ptr, sizeof(loopy_writer_ptr), symaddrs->writeHeader_l_loc, sp, regs);
+
+  uint32_t stream_id = 0;
+  // 1.17及之后的go使用基于寄存器的调用惯例，也就是说使用寄存器来传递参数和返回值，但是1.17以下的版本是使用堆栈来传递的
+  // assign_arg封装了这两种读取方式 bpf_probe_read(arg, arg_size, sp + loc.offset) / bpf_probe_read(arg, arg_size, (char*)regs + loc.offset)
+  // 可以理解为这里就是bpf_probe_read
+  assign_arg(&stream_id, sizeof(stream_id), symaddrs->writeHeader_streamID_loc, sp, regs);
+
+  bool end_stream = false;
+  assign_arg(&end_stream, sizeof(end_stream), symaddrs->writeHeader_endStream_loc, sp, regs);
+
+  void* fields_ptr = NULL;
+  assign_arg(&fields_ptr, sizeof(fields_ptr), symaddrs->writeHeader_hf_ptr_loc, sp, regs);
+
+  int64_t fields_len = 0;
+  assign_arg(&fields_len, sizeof(fields_len), symaddrs->writeHeader_hf_len_loc, sp, regs);
+
+  // ---------------------------------------------
+  // Extract members
+  // ---------------------------------------------
+
+  void* framer_ptr;
+  // bpf_probe_read(&value, sizeof(value), ptr)的宏定义
+  BPF_PROBE_READ_VAR(framer_ptr, loopy_writer_ptr + symaddrs->loopyWriter_framer_offset);
+
+  // TODO(oazizi): Stop using mirrored go structs, and use DWARF info instead.
+  struct go_grpc_framer_t go_grpc_framer;
+  BPF_PROBE_READ_VAR(go_grpc_framer, framer_ptr);
+
+  const int32_t fd = get_fd_from_http2_Framer(go_grpc_framer.http2_framer, symaddrs);
+  if (fd == kInvalidFD) {
+    return 0;
+  }
+
+  submit_headers(ctx, k_probe_loopy_writer_write_header, kHeaderEventWrite, fd, stream_id,
+                 end_stream, fields_ptr, fields_len, symaddrs);
+
+  return 0;
+}
+
 
 // Shared helper function for:
 //   probe_http2_client_operate_headers()
