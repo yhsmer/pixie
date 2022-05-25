@@ -211,7 +211,7 @@ static __inline void submit_headers(struct pt_regs* ctx, enum http2_probe_type_t
 
   // TODO(oazizi): Replace this constant with information from DWARF.
   const int kSizeOfHeaderField = 40;
-#pragma unroll
+#pragma unroll // 可以安全的展开循环，运行效率更好
   for (unsigned int i = 0; i < MAX_HEADER_COUNT; ++i) {
     if (i < fields_len) {
       fill_header_field(event, fields_ptr + i * kSizeOfHeaderField, symaddrs);
@@ -269,6 +269,7 @@ struct go_grpc_framer_t {
 //
 // Symbol:
 //   google.golang.org/grpc/internal/transport.(*loopyWriter).writeHeader
+/*
 int probe_loopy_writer_write_header(struct pt_regs* ctx) {
   uint32_t tgid = bpf_get_current_pid_tgid() >> 32;
   struct go_http2_symaddrs_t* symaddrs = http2_symaddrs_map.lookup(&tgid);
@@ -332,6 +333,7 @@ int probe_loopy_writer_write_header(struct pt_regs* ctx) {
 
   return 0;
 }
+*/
 
 // Experiment
 int probe_loopy_writer_write_header(struct pt_regs* ctx) {
