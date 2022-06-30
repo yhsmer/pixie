@@ -768,7 +768,7 @@ int probe_http_http2writeResHeaders_write_frame(struct pt_regs* ctx) {
   attr.conn_id = conn_info->conn_id;
   attr.stream_id = stream_id;
 
-  // We don't have the header values yet, and they are not easy to get from this probe,
+  // We don't have the header values yet, and they are not  easy to get from this probe,
   // so we just stash the information collected so far.
   // A separate probe, on the hpack encoder monitors the headers being encoded,
   // and joins that information with the stashed information collected here.
